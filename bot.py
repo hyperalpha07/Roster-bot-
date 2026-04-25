@@ -341,7 +341,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target = detect_target(text)
-    topic = detect_topic(text)
+   # SMART
+topic = detect_topic_ai(text)
 
     if target:
         save_target(chat.id, attacker, target, topic, text)
