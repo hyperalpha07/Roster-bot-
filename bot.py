@@ -17,6 +17,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "").strip()
 ROAST_GROUP_ID = os.getenv("ROAST_GROUP_ID", "").strip()
 
+DAY_SHIFT_START = os.getenv("DAY_SHIFT_START", "05:00").strip()
+DAY_SHIFT_END = os.getenv("DAY_SHIFT_END", "17:20").strip()
+
 DB_PATH = "roast_memory.db"
 repair_mode = False
 
@@ -27,6 +30,30 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 # =========================================================
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def today_minutes():
+    now = datetime.now()
+    return now.hour * 60 + now.minute
+
+
+def parse_hhmm(value: str):
+    try:
+        h, m = value.strip().split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return 5 * 60
+
+
+def is_day_shift_now():
+    start = parse_hhmm(DAY_SHIFT_START)
+    end = parse_hhmm(DAY_SHIFT_END)
+    cur = today_minutes()
+
+    if start <= end:
+        return start <= cur <= end
+
+    return cur >= start or cur <= end
 
 
 def get_admin_ids():
@@ -47,10 +74,10 @@ def clean_name(value):
     value = str(value or "").strip()
     value = re.sub(r"[@:।,!?]", "", value)
     value = re.sub(r"\s+", " ", value)
-    return value[:40].strip()
+    return value[:50].strip()
 
 
-def user_display_name(user):
+def raw_display_name(user):
     if user.username:
         return user.username.upper()
     return (user.full_name or str(user.id)).upper()
@@ -96,8 +123,136 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id TEXT PRIMARY KEY,
+        username TEXT,
+        full_name TEXT,
+        day_name TEXT,
+        night_name TEXT,
+        role TEXT,
+        last_seen TEXT
+    )
+    """)
+
     con.commit()
     con.close()
+
+
+def register_user(user):
+    if not user:
+        return
+
+    uid = str(user.id)
+    username = user.username or ""
+    full_name = user.full_name or ""
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+
+    cur.execute("SELECT user_id FROM user_profiles WHERE user_id=?", (uid,))
+    exists = cur.fetchone()
+
+    if exists:
+        cur.execute("""
+        UPDATE user_profiles
+        SET username=?, full_name=?, last_seen=?
+        WHERE user_id=?
+        """, (username, full_name, now_str(), uid))
+    else:
+        cur.execute("""
+        INSERT INTO user_profiles(user_id,username,full_name,day_name,night_name,role,last_seen)
+        VALUES(?,?,?,?,?,?,?)
+        """, (uid, username, full_name, full_name or username or uid, "", "MEMBER", now_str()))
+
+    con.commit()
+    con.close()
+
+
+def set_user_profile(user_id, day_name, night_name, role="MEMBER"):
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+
+    cur.execute("SELECT user_id FROM user_profiles WHERE user_id=?", (str(user_id),))
+    exists = cur.fetchone()
+
+    if exists:
+        cur.execute("""
+        UPDATE user_profiles
+        SET day_name=?, night_name=?, role=?, last_seen=?
+        WHERE user_id=?
+        """, (day_name, night_name, role.upper(), now_str(), str(user_id)))
+    else:
+        cur.execute("""
+        INSERT INTO user_profiles(user_id,username,full_name,day_name,night_name,role,last_seen)
+        VALUES(?,?,?,?,?,?,?)
+        """, (str(user_id), "", "", day_name, night_name, role.upper(), now_str()))
+
+    con.commit()
+    con.close()
+
+
+def get_profile_by_id(user_id):
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+    SELECT user_id,username,full_name,day_name,night_name,role,last_seen
+    FROM user_profiles
+    WHERE user_id=?
+    """, (str(user_id),))
+    row = cur.fetchone()
+    con.close()
+
+    if not row:
+        return None
+
+    return {
+        "user_id": row[0],
+        "username": row[1] or "",
+        "full_name": row[2] or "",
+        "day_name": row[3] or "",
+        "night_name": row[4] or "",
+        "role": row[5] or "MEMBER",
+        "last_seen": row[6] or "",
+    }
+
+
+def get_active_name_by_id(user_id, fallback_user=None):
+    profile = get_profile_by_id(user_id)
+
+    if profile:
+        if is_day_shift_now():
+            name = profile["day_name"] or profile["full_name"] or profile["username"] or str(user_id)
+        else:
+            name = profile["night_name"] or profile["day_name"] or profile["full_name"] or profile["username"] or str(user_id)
+        return clean_name(name).upper()
+
+    if fallback_user:
+        return raw_display_name(fallback_user)
+
+    return str(user_id)
+
+
+def find_user_by_name_or_username(name):
+    q = clean_name(name).lower()
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+    SELECT user_id,username,full_name,day_name,night_name,role,last_seen
+    FROM user_profiles
+    """)
+    rows = cur.fetchall()
+    con.close()
+
+    for row in rows:
+        user_id, username, full_name, day_name, night_name, role, last_seen = row
+        candidates = [username, full_name, day_name, night_name]
+        for c in candidates:
+            if c and clean_name(c).lower() == q:
+                return get_active_name_by_id(user_id)
+
+    return clean_name(name).upper()
 
 
 def save_chat(chat_id, user_id, name, message):
@@ -131,7 +286,7 @@ def save_person_memory(target, note, created_by):
     cur.execute("""
     INSERT INTO person_memory(target,note,created_by,created_at)
     VALUES(?,?,?,?)
-    """, (target.upper(), note[:200], created_by, now_str()))
+    """, (target.upper(), note[:220], created_by, now_str()))
     con.commit()
     con.close()
 
@@ -175,31 +330,35 @@ def get_target_memory_note(target):
     return " | ".join(notes[:10])
 
 
-def get_recent_target(chat_id, attacker):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cur.execute("""
-    SELECT target, topic, message
-    FROM target_memory
-    WHERE chat_id=? AND attacker=?
-    ORDER BY id DESC
-    LIMIT 1
-    """, (str(chat_id), attacker))
-    row = cur.fetchone()
-    con.close()
-    return row
+# =========================================================
+# TARGET DETECTION
+# =========================================================
+def detect_reply_target(update: Update):
+    if not update.message or not update.message.reply_to_message:
+        return None
+
+    replied_user = update.message.reply_to_message.from_user
+    if not replied_user:
+        return None
+
+    register_user(replied_user)
+    return get_active_name_by_id(replied_user.id, replied_user)
 
 
-# =========================================================
-# TARGET + MEMORY DETECTION
-# =========================================================
-def detect_target(text):
+def detect_mention_target(text):
+    mention = re.findall(r"@([A-Za-z0-9_]+)", text)
+    if mention:
+        return find_user_by_name_or_username(mention[0])
+    return None
+
+
+def detect_text_target(text):
     raw = text.strip()
 
     patterns = [
-        r"^(.+?)\s+(?:always|sob somoy|সবসময়|সব সময়)\s+(.+)$",
-        r"^(.+?)\s+(?:ke|কে)\s+(.+)$",
-        r"^(.+?)\s+(?:chittar|chitar|cheater|চিটার|faforbaj|fapore|fapor|ফাপরবাজ|ফাপরে|lazy|লেজি|drama|নাটক|boka|বোকা|hutase|হুটাসে).*$",
+        r"^@?([A-Za-z0-9_\u0980-\u09FF\s]+?)\s+(?:always|sob somoy|সবসময়|সব সময়)\s+(.+)$",
+        r"^@?([A-Za-z0-9_\u0980-\u09FF\s]+?)\s+(?:ke|কে)\s+(.+)$",
+        r"^@?([A-Za-z0-9_\u0980-\u09FF\s]+?)\s+(?:chittar|chitar|cheater|চিটার|faforbaj|fapore|fapor|ফাপরবাজ|ফাপরে|lazy|লেজি|drama|নাটক|boka|বোকা|hutase|হুটাসে|hero|হিরো|attitude).*$",
     ]
 
     for p in patterns:
@@ -207,15 +366,30 @@ def detect_target(text):
         if m:
             target = clean_name(m.group(1))
             if target:
-                return target.upper()
+                return find_user_by_name_or_username(target)
 
     words = raw.split()
     if len(words) >= 2:
         first = clean_name(words[0])
         if first:
-            return first.upper()
+            return find_user_by_name_or_username(first)
 
     return None
+
+
+def detect_target(update: Update, text: str):
+    # 1) Reply target is highest priority
+    reply_target = detect_reply_target(update)
+    if reply_target:
+        return reply_target
+
+    # 2) @username target
+    mention_target = detect_mention_target(text)
+    if mention_target:
+        return mention_target
+
+    # 3) Normal text target
+    return detect_text_target(text)
 
 
 def extract_memory_note(text, target):
@@ -224,25 +398,22 @@ def extract_memory_note(text, target):
 
     raw = text.strip()
     low = raw.lower()
-
-    target_low = target.lower()
     note = raw
 
-    note = re.sub(rf"^{re.escape(target_low)}\s+", "", note, flags=re.IGNORECASE).strip()
-
-    if any(x in low for x in ["always", "sob somoy", "সবসময়", "সব সময়", "hobe", "হবে", "bole", "বলে"]):
-        return note[:200]
+    note = re.sub(rf"^{re.escape(target.lower())}\s+", "", note, flags=re.IGNORECASE).strip()
 
     memory_words = [
+        "always", "sob somoy", "সবসময়", "সব সময়",
         "faforbaj", "fapore", "fapor", "ফাপরবাজ", "ফাপরে",
         "chittar", "chitar", "cheater", "চিটার",
         "lazy", "লেজি", "drama", "নাটক",
         "boka", "বোকা", "hutase", "হুটাসে",
         "hero", "হিরো", "over", "attitude",
+        "dhoka", "ঠকায়", "ধোঁকা", "miche", "মিথ্যা"
     ]
 
     if any(w in low for w in memory_words):
-        return note[:200]
+        return note[:220]
 
     return None
 
@@ -405,18 +576,40 @@ Rules:
 # COMMANDS
 # =========================================================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    register_user(update.effective_user)
+
+    text = (
         "🔥 Ultra Savage Roast Bot active.\n\n"
+        f"তোমার Telegram ID: {update.effective_user.id}\n"
+        f"Detected name: {get_active_name_by_id(update.effective_user.id, update.effective_user)}\n\n"
         "Example:\n"
         "joni always faforbaj\n"
         "surjo sobar taka khai\n"
         "alon beshi hero hoy\n"
-        "mony natok kore\n\n"
+        "অথবা কারো message-এ reply দিয়ে লিখো: chittar\n\n"
         "Admin:\n"
         "/status\n"
-        "/repair_on\n"
-        "/repair_off\n"
-        "/memory"
+        "/users\n"
+        "/setuser USER_ID DAY_NAME NIGHT_NAME ROLE\n"
+        "/memory\n"
+        "/forget NAME"
+    )
+
+    await update.message.reply_text(text)
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    await update.message.reply_text(
+        "🔥 ROAST BOT STATUS\n\n"
+        f"Repair Mode: {'ON 🔧' if repair_mode else 'OFF ✅'}\n"
+        f"OpenAI: {'ON 🤖' if OPENAI_API_KEY else 'OFF'}\n"
+        f"Group Lock: {ROAST_GROUP_ID or 'OFF'}\n"
+        f"Mode: ULTRA SAVAGE\n"
+        f"Current Shift: {'DAY' if is_day_shift_now() else 'NIGHT'}\n"
+        f"Day Shift: {DAY_SHIFT_START} - {DAY_SHIFT_END}"
     )
 
 
@@ -440,16 +633,69 @@ async def repair_off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Repair mode OFF")
 
 
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+    SELECT user_id, username, full_name, day_name, night_name, role, last_seen
+    FROM user_profiles
+    ORDER BY last_seen DESC
+    LIMIT 30
+    """)
+    rows = cur.fetchall()
+    con.close()
+
+    if not rows:
+        await update.message.reply_text("No users saved yet.")
+        return
+
+    msg = "👥 SAVED USERS\n\n"
+
+    for uid, username, full_name, day_name, night_name, role, last_seen in rows:
+        msg += (
+            f"ID: {uid}\n"
+            f"Username: @{username if username else '-'}\n"
+            f"TG Name: {full_name or '-'}\n"
+            f"Day: {day_name or '-'}\n"
+            f"Night: {night_name or '-'}\n"
+            f"Role: {role or 'MEMBER'}\n"
+            f"Seen: {last_seen or '-'}\n\n"
+        )
+
+    await update.message.reply_text(msg[:4000])
+
+
+async def setuser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    if len(context.args) < 4:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/setuser USER_ID DAY_NAME NIGHT_NAME ROLE\n\n"
+            "Example:\n"
+            "/setuser 123456789 MONIR MEHEDI MEMBER\n\n"
+            "যদি same person day/night হয়:\n"
+            "/setuser 123456789 MONIR MONIR MEMBER"
+        )
+        return
+
+    user_id = context.args[0]
+    day_name = context.args[1]
+    night_name = context.args[2]
+    role = context.args[3]
+
+    set_user_profile(user_id, day_name, night_name, role)
+
     await update.message.reply_text(
-        "🔥 ROAST BOT STATUS\n\n"
-        f"Repair Mode: {'ON 🔧' if repair_mode else 'OFF ✅'}\n"
-        f"OpenAI: {'ON 🤖' if OPENAI_API_KEY else 'OFF'}\n"
-        f"Group Lock: {ROAST_GROUP_ID or 'OFF'}\n"
-        f"Mode: ULTRA SAVAGE"
+        f"✅ User profile saved\n\n"
+        f"ID: {user_id}\n"
+        f"Day: {day_name.upper()}\n"
+        f"Night: {night_name.upper()}\n"
+        f"Role: {role.upper()}"
     )
 
 
@@ -531,18 +777,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     text = update.message.text.strip()
-    attacker = user_display_name(user)
 
+    register_user(user)
+
+    attacker = get_active_name_by_id(user.id, user)
     save_chat(chat.id, user.id, attacker, text)
 
     if repair_mode and not is_admin(user.id):
         return
 
-    target = detect_target(text)
+    target = detect_target(update, text)
 
     if not target:
         return
 
+    # If user replies only "chittar", target comes from replied message.
     topic = detect_topic(text)
     memory_note = extract_memory_note(text, target)
 
@@ -564,6 +813,8 @@ async def post_init(application: Application):
         BotCommand("status", "Admin only bot status"),
         BotCommand("repair_on", "Admin only repair ON"),
         BotCommand("repair_off", "Admin only repair OFF"),
+        BotCommand("users", "Admin only saved users"),
+        BotCommand("setuser", "Admin set day/night user"),
         BotCommand("memory", "Admin only show memory"),
         BotCommand("forget", "Admin only forget target memory"),
     ]
@@ -579,6 +830,7 @@ def main():
     print("Ultra Savage Roast Bot running...")
     print("OpenAI:", "ON" if OPENAI_API_KEY else "OFF")
     print("Group Lock:", ROAST_GROUP_ID or "OFF")
+    print("Shift:", DAY_SHIFT_START, "-", DAY_SHIFT_END)
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
@@ -586,6 +838,8 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("repair_on", repair_on_cmd))
     app.add_handler(CommandHandler("repair_off", repair_off_cmd))
+    app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CommandHandler("setuser", setuser_cmd))
     app.add_handler(CommandHandler("memory", memory_cmd))
     app.add_handler(CommandHandler("forget", forget_cmd))
 
