@@ -79,6 +79,19 @@ TRIGGERS = [
     "খোঁচা", "খোচা", "ধুয়ে দাও", "dhuye dao", "jhari", "ঝাড়", "ঝাড়"
 ]
 
+
+POINT_KEYWORDS = [
+    "ফাপর", "ফাপরবাজ", "ফাপরে", "ফাঁপর", "ভাব", "ভাববাজ", "অজুহাত", "চিটার", "বাটপার", "লেট", "টাকা", "খাই", "খায়",
+    "fapor", "fapore", "faporbaj", "fafor", "fafore", "faforbarj", "faforbaj", "vong", "bhab", "chittar", "cheater", "batpar", "late", "taka", "khai", "khay"
+]
+POINT_TRANSLATE = {
+    "fapor": "ফাপরবাজ", "fapore": "ফাপরবাজ", "faporbaj": "ফাপরবাজ", "fafor": "ফাপরবাজ",
+    "fafore": "ফাপরবাজ", "faforbarj": "ফাপরবাজ", "faforbaj": "ফাপরবাজ",
+    "vong": "ভাববাজ", "bhab": "ভাববাজ", "chittar": "চিটার", "cheater": "চিটার",
+    "batpar": "বাটপার", "late": "লেটবাজ", "taka": "টাকার নাটক", "khai": "টাকা খাওয়া", "khay": "টাকা খাওয়া",
+}
+BANGLA_STOP = {"ami","amr","amar","tumi","tor","tar","se","ei","oi","eta","ata","taile","bole","bolse","bollo","vai","bhai","রে","কে","এর","এই","ওই","সে","আমি","তুমি","তার","করে","বলে","একদম"}
+
 NORMAL_RESPONSE = (
     "আমি normal message-এর জন্য না। আমাকে target বলো।\n"
     "উদাহরণ: <b>joni ফাপরে চলে</b> / <b>joni vs mony</b> / কারো message-এ reply দিয়ে কারণ লিখো।"
@@ -282,13 +295,61 @@ def clean_command_words(text: str) -> str:
     t = text.strip()
     for w in TRIGGERS:
         t = re.sub(rf"\b{re.escape(w)}\b", " ", t, flags=re.I)
-    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+", " ", t).strip(" ,।")
     return t
+
+
+def point_to_bangla(reason: str) -> str:
+    raw = str(reason or "").strip()
+    low = norm(raw)
+    for k, v in POINT_TRANSLATE.items():
+        if k in low:
+            return v
+    raw = re.sub(r"\s+", " ", raw).strip(" ,।")
+    return raw[:90] if raw else "ফাপরবাজ"
+
+
+def has_point(text: str) -> bool:
+    low = norm(text)
+    return any(k in low for k in POINT_KEYWORDS) or any(k in str(text) for k in POINT_KEYWORDS)
+
+
+def extract_target_reason(data: Dict[str, Any], text: str) -> Tuple[Optional[str], str]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None, ""
+
+    known = find_known_target(data, raw)
+    if known:
+        reason = clean_command_words(re.sub(re.escape(known), " ", raw, flags=re.I)).strip()
+        return known, reason
+
+    words = [w.strip("@,।!?;:") for w in raw.split() if w.strip("@,।!?;:")]
+    if len(words) >= 2:
+        lows = [norm(w) for w in words]
+        idx = None
+        for i, lw in enumerate(lows):
+            if any(k in lw for k in POINT_KEYWORDS):
+                idx = i
+                break
+        if idx is not None and idx > 0:
+            before = words[max(0, idx-2):idx]
+            before = [w for w in before if norm(w) not in BANGLA_STOP]
+            if before:
+                return " ".join(before[-2:]), " ".join(words[idx:idx+5])
+
+    has_trigger = any(w.lower() in raw.lower() for w in TRIGGERS)
+    cleaned = clean_command_words(raw)
+    parts = cleaned.split()
+    if has_trigger and len(parts) >= 2:
+        return parts[0].lstrip("@").strip(" ,।"), " ".join(parts[1:])
+
+    return None, ""
 
 
 def parse_vs(text: str) -> Optional[Tuple[str, str, str]]:
     raw = text.strip()
-    patterns = [r"(.+?)\s+vs\s+(.+)", r"(.+?)\s+VS\s+(.+)", r"(.+?)\s+versus\s+(.+)"]
+    patterns = [r"(.+?)\s+vs\s+(.+)", r"(.+?)\s+VS\s+(.+)", r"(.+?)\s+versus\s+(.+)", r"(.+?)\s+বনাম\s+(.+)"]
     for p in patterns:
         m = re.search(p, raw, flags=re.I)
         if m:
@@ -316,7 +377,6 @@ def parse_message(data: Dict[str, Any], update: Update) -> ParsedTarget:
     msg = update.effective_message
     text = msg.text or msg.caption or ""
 
-    # Reply targeting: reply to someone's message + reason = target replied user.
     if msg.reply_to_message and msg.reply_to_message.from_user:
         target_name = display_name(msg.reply_to_message.from_user)
         reason = clean_command_words(text)
@@ -326,86 +386,46 @@ def parse_message(data: Dict[str, Any], update: Update) -> ParsedTarget:
     if vs:
         return ParsedTarget(mode="vs", target=vs[0], target2=vs[1], reason=vs[2])
 
-    known = find_known_target(data, text)
-    if known:
-        reason = clean_command_words(re.sub(re.escape(known), " ", text, flags=re.I)).strip()
-        return ParsedTarget(mode="single", target=known, reason=reason)
+    words_raw = [w.strip("@,।!?") for w in text.split() if w.strip("@,।!?")]
+    if len(words_raw) == 1:
+        key = norm(words_raw[0])
+        if key in data.get("memories", {}) or key in data.get("recent_messages", {}) or key in data.get("name_to_id", {}):
+            return ParsedTarget(mode="single", target=words_raw[0], reason="")
 
-    # Pattern: first word as target if trigger/reason exists.
-    words = text.strip().split()
-    has_trigger = any(w.lower() in text.lower() for w in TRIGGERS)
-    if words and has_trigger:
-        target = words[0].lstrip("@").strip(" ,।")
-        reason = clean_command_words(" ".join(words[1:]))
+    target, reason = extract_target_reason(data, text)
+    if target and reason:
         return ParsedTarget(mode="single", target=target, reason=reason)
 
     return ParsedTarget(mode="normal")
 
 # =========================================================
-# ROAST ENGINE - Bangla only, clean savage, no vulgar words
+# ROAST ENGINE - short, direct, point based savage roast
 # =========================================================
-OPENERS = [
-    "আজকের target <b>{target}</b>, আর অবস্থা দেখে মনে হচ্ছে আত্মবিশ্বাসটা full charge, কিন্তু কাজের speed এখনো loading screen-এ আটকে আছে।",
-    "<b>{target}</b> এমন confidence নিয়ে চলে, যেন পুরো group তার fan club; বাস্তবে সবাই শুধু screenshot নেওয়ার অপেক্ষায় থাকে।",
-    "<b>{target}</b>-কে দেখলে বোঝা যায়, drama free life সম্ভব না—কারণ drama নিজেই হাঁটতে হাঁটতে চলে এসেছে।",
-]
-
-REASON_LINES = [
-    "কারণটা পরিষ্কার: <b>{reason}</b>। এই level-এর performance দেখে calculator-ও হিসাব করতে লজ্জা পায়।",
-    "ঘটনা হলো: <b>{reason}</b>। এত সুন্দরভাবে নিজেকে expose করা সত্যিই rare talent।",
-    "Main point: <b>{reason}</b>। এখানে আর roast লাগে না, ঘটনা নিজেই premium insult package।",
-]
-
-MEMORY_LINES = [
-    "আগের record বলছে: <b>{memory}</b>। তাই আজকের roast নতুন না, শুধু পুরোনো file আবার open হলো।",
-    "Memory থেকে দেখা যাচ্ছে: <b>{memory}</b>। মানুষ ভুলতে পারে, bot কিন্তু evidence রাখে।",
-    "তার history-তে লেখা আছে: <b>{memory}</b>। এই data দেখে reputation নিজেই silent mode-এ চলে গেছে।",
-]
-
-FALLBACK_LINES = [
-    "তথ্য কম, কিন্তু vibe যথেষ্ট। <b>{target}</b> এমনভাবে serious হয়, যেন meeting করছে; ফলাফল দেখে মনে হয় practice match-ও না।",
-    "<b>{target}</b>-এর সমস্যা হলো কথা বলার আগে confidence আসে, logic পরে রাস্তা খুঁজে।",
-    "তথ্য না থাকলেও আন্দাজ পরিষ্কার—<b>{target}</b> আগে pose দেয়, পরে বুঝে scene কী ছিল।",
-]
-
-CLOSERS = [
-    "তাই শান্ত থাকো, পানি খাও, আর পরেরবার entry দেওয়ার আগে নিজের software update করে এসো।",
-    "Group-এ comeback করতে চাইলে আগে performance দাও, excuse না।",
-    "আজ এতটুকুই যথেষ্ট—বাকি দিলে self-respect নিজেই leave request দিয়ে দেবে।",
-]
-
-VS_LINES = [
-    "<b>{a}</b> vs <b>{b}</b> — এটা fight না, এটা হলো কে আগে নিজের logic হারাবে সেই competition।",
-    "এক পাশে <b>{a}</b>, আরেক পাশে <b>{b}</b>; দুইজনের confidence high, কিন্তু proof দুজনেরই network problem।",
-    "<b>{a}</b> আর <b>{b}</b> একসাথে নামলে group শান্ত থাকে না, কারণ comedy আর confusion একই stage-এ উঠে পড়ে।",
-]
-
-
 def make_roast(target: str, reason: str, memories: List[str]) -> str:
-    parts = [random.choice(OPENERS).format(target=safe(target))]
-    if reason and len(reason.strip()) > 1:
-        parts.append(random.choice(REASON_LINES).format(reason=safe(reason[:220])))
-    if memories:
-        mem = random.choice(memories[-6:])
-        parts.append(random.choice(MEMORY_LINES).format(memory=safe(mem[:220])))
-    if not reason and not memories:
-        parts.append(random.choice(FALLBACK_LINES).format(target=safe(target)))
-    parts.append(random.choice(CLOSERS))
-    return "\n\n".join(parts)
+    point = point_to_bangla(reason or (memories[-1] if memories else "ফাপরবাজ"))
+    t = safe(target)
+    p = safe(point)
+    templates = [
+        f"<b>{t}</b> এমন {p}, কথা শুনলে মনে হয় group-এর CEO, কিন্তু কাজের সময় খুঁজলে দেখা যায় network-এর বাইরে। {p} কমা, আগে নিজের performance দেখাও।",
+        f"<b>{t}</b>-এর {p} দেখে মনে হয় confidenceটা লোনে নেওয়া। কথা বড়, কাজ ছোট—এই জন্যই group-এ ঢুকলেই entertainment শুরু হয়।",
+        f"<b>{t}</b> আবার {p} mode on করেছে! এমন ভাব নেয় যেন সবাই তার update-এর অপেক্ষায়, অথচ বাস্তবে তার কথাই সবচেয়ে বেশি bug খায়।",
+        f"<b>{t}</b> এত {p} যে কথা শুরু করলেই মনে হয় নাটকের trailer চলছে। আগে নিজের level ঠিক করো, তারপর group-এ lecture দিও।",
+        f"<b>{t}</b>-কে দেখে বুঝি {p} শুধু অভ্যাস না, এটা full-time duty। কাজের সময় silent, আর কথা বলার সময় এমন ভাব যেন পুরো group তার fan club।",
+    ]
+    line = random.choice(templates)
+    if memories and random.random() < 0.30:
+        mem_point = point_to_bangla(random.choice(memories[-6:]))
+        line += f"\n\nআগের file-ও বলছে: <b>{safe(mem_point)}</b>। মানে problem নতুন না, পুরোনো season-এর নতুন episode।"
+    return line
 
 
 def make_vs_roast(a: str, b: str, reason: str, mem_a: List[str], mem_b: List[str]) -> str:
-    parts = [random.choice(VS_LINES).format(a=safe(a), b=safe(b))]
-    if reason:
-        parts.append(f"আজকের issue: <b>{safe(reason[:220])}</b>।")
-    if mem_a:
-        parts.append(f"<b>{safe(a)}</b>-এর file থেকে: <b>{safe(random.choice(mem_a[-5:])[:180])}</b>।")
-    if mem_b:
-        parts.append(f"<b>{safe(b)}</b>-এর file থেকেও কম যায় না: <b>{safe(random.choice(mem_b[-5:])[:180])}</b>।")
-    if not mem_a and not mem_b and not reason:
-        parts.append("দুইজনের ব্যাপারেই data কম, কিন্তু group-এর reaction দেখে বোঝা যাচ্ছে problem real।")
-    parts.append("Final result: দুজনেই একটু চুপ থাকলে group-এর battery বাঁচে।")
-    return "\n\n".join(parts)
+    issue = point_to_bangla(reason) if reason else "দুইজনের ফাপর"
+    return (
+        f"<b>{safe(a)}</b> বনাম <b>{safe(b)}</b> — issue হলো <b>{safe(issue)}</b>।\n\n"
+        f"একজন এমন ভাব নেয় যেন group তার নামে চলে, আরেকজন এমন confidence দেখায় যেন logic তার private property। "
+        f"দুইজন একটু চুপ থাকলে group-এর battery আর শান্তি—দুটাই বেঁচে যায়।"
+    )
 
 # =========================================================
 # COMMANDS
