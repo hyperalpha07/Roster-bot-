@@ -118,24 +118,34 @@ def user_display_name(user):
     return (user.full_name or str(user.id)).upper()
 
 
-def detect_topic(text):
-    low = text.lower()
+def detect_topic_ai(text):
+    if not client:
+        return "general"
 
-    topic_map = {
-        "cheater": ["chittar", "chitar", "cheater", "চিটার", "চিটিং"],
-        "fapore": ["fapore", "fapor", "ফাপরে", "ফাপর"],
-        "lazy": ["lazy", "লেজি", "অলস", "alas"],
-        "drama": ["drama", "নাটক", "natok"],
-        "boka": ["boka", "বোকা", "গাধা"],
-        "hutashe": ["hutase", "hutashe", "হুটাসে"],
-        "hero": ["hero", "হিরো", "smart", "স্টাইল"],
-    }
+    prompt = f"""
+User message: {text}
 
-    for topic, words in topic_map.items():
-        if any(w in low for w in words):
-            return topic
+এই message অনুযায়ী target কে কোন কারণে roast করা হচ্ছে সেটা এক কথায় বলো।
 
-    return "general"
+Rules:
+- 1 word only
+- english word
+- example: cheating, lazy, drama, fake, stupid, attention, annoying, overconfident
+
+Answer শুধু word হবে।
+"""
+
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=10,
+        )
+        topic = res.choices[0].message.content.strip().lower()
+        return topic if topic else "general"
+    except:
+        return "general"
 
 
 def detect_target(text):
