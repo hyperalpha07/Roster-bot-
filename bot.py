@@ -5,30 +5,36 @@ import random
 import logging
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.constants import ChatType
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
+try:
+    from openai import AsyncOpenAI
+except Exception:
+    AsyncOpenAI = None
+
 # =========================================================
-# ALPHA AI ROAST BOT - UPGRADE VERSION
-# Dynamic AI roast, no fixed reply, sharp sarcastic Bangla roast.
-# Works with local fallback if OpenAI fails.
+# ALPHA ULTRA SMART AI ROAST BOT
+# Dynamic AI roast + fallback. No fixed reply.
+# Clean savage Bengali roast only. No slur/threat/hate.
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").replace("@", "").strip().lower()
+TZ = ZoneInfo(os.getenv("TZ", "Asia/Colombo"))
+DATA_FILE = Path(os.getenv("DATA_FILE", "roast_memory.json"))
 
-# Supports both variable names
-_ADMIN_RAW = os.getenv("ADMIN_IDS") or os.getenv("ADMIN_USER_IDS") or ""
-ADMIN_IDS = {int(x.strip()) for x in _ADMIN_RAW.replace(";", ",").split(",") if x.strip().isdigit()}
-
-DATA_FILE = Path(os.getenv("DATA_FILE", "alpha_roast_memory.json"))
+# supports both ADMIN_IDS and ADMIN_USER_IDS
+_admin_raw = (os.getenv("ADMIN_IDS", "") + "," + os.getenv("ADMIN_USER_IDS", "")).replace(";", ",")
+ADMIN_IDS = {int(x.strip()) for x in _admin_raw.split(",") if x.strip().isdigit()}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-log = logging.getLogger("alpha-ai-roast")
+log = logging.getLogger("alpha-roast")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN missing in Railway Variables")
@@ -38,9 +44,12 @@ DEFAULT_DATA = {
     "normal_reply": True,
     "group_lock": False,
     "allowed_groups": [],
-    "memory_by_name": {},
     "users": {},
+    "memory": {},
+    "chat_messages": {},
+    "roast_level": "brutal",  # light / savage / brutal
 }
+
 
 def load_data():
     if DATA_FILE.exists():
@@ -50,31 +59,44 @@ def load_data():
                 data.setdefault(k, v)
             return data
         except Exception:
-            log.exception("Memory file load failed, using default")
-    return json.loads(json.dumps(DEFAULT_DATA, ensure_ascii=False))
+            log.exception("memory load failed")
+    return json.loads(json.dumps(DEFAULT_DATA))
 
-DATA = load_data()
 
 def save_data():
     DATA_FILE.write_text(json.dumps(DATA, ensure_ascii=False, indent=2), encoding="utf-8")
 
+
+DATA = load_data()
+client = AsyncOpenAI(api_key=OPENAI_API_KEY) if (AsyncOpenAI and OPENAI_API_KEY) else None
+
+FAMILY_WORDS = {"kaka", "vai", "bhai", "mama", "apu", "dada", "ভাই", "কাকা", "মামা", "আপু", "দাদা", "চাচা"}
+IGNORE_WORDS = {"hi", "hello", "ok", "okay", "hmm", "হাই", "হ্যালো", "ঠিক", "আচ্ছা"}
+
+
 def is_admin(uid: int) -> bool:
     return uid in ADMIN_IDS
 
-def clean_text(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
 
-def clean_name(s: str) -> str:
+def clean_text(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def key_name(s: str) -> str:
     s = clean_text(s).lower()
-    s = re.sub(r"^@", "", s)
-    s = re.sub(r"[^a-zA-Z0-9অ-হঀ-৿_\s.-]", "", s)
-    return clean_text(s)
+    s = re.sub(r"[@#:/\\|,.;!?]+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
 
 def display_name(user) -> str:
     if not user:
-        return "কেউ একজন"
+        return "ওইজন"
     name = " ".join([x for x in [user.first_name, user.last_name] if x]).strip()
     return name or ("@" + user.username if user.username else str(user.id))
+
 
 def remember_user(update: Update):
     u = update.effective_user
@@ -84,13 +106,159 @@ def remember_user(update: Update):
         "id": u.id,
         "name": display_name(u),
         "username": u.username or "",
-        "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_seen": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
     }
     save_data()
 
-def arg_text(message_text: str) -> str:
-    parts = (message_text or "").split(maxsplit=1)
+
+def store_chat_message(update: Update, text: str):
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user or not text:
+        return
+    cid = str(chat.id)
+    DATA["chat_messages"].setdefault(cid, [])
+    DATA["chat_messages"][cid].append({
+        "uid": user.id,
+        "name": display_name(user),
+        "text": text[:500],
+        "time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    DATA["chat_messages"][cid] = DATA["chat_messages"][cid][-120:]
+    save_data()
+
+
+def recent_context(chat_id: int, limit: int = 12) -> str:
+    msgs = DATA.get("chat_messages", {}).get(str(chat_id), [])[-limit:]
+    return "\n".join([f"{m['name']}: {m['text']}" for m in msgs])
+
+
+def memory_for(name: str) -> str:
+    mems = DATA.get("memory", {}).get(key_name(name), [])
+    return " | ".join(mems[-5:]) if mems else ""
+
+
+def save_point(name: str, point: str):
+    n = key_name(name)
+    p = clean_text(point)
+    if not n or not p or len(p) < 2:
+        return
+    DATA["memory"].setdefault(n, [])
+    DATA["memory"][n].append(p[:300])
+    DATA["memory"][n] = DATA["memory"][n][-30:]
+    save_data()
+
+
+def command_arg(text: str) -> str:
+    parts = text.split(maxsplit=1)
     return parts[1].strip() if len(parts) > 1 else ""
+
+
+def parse_target_reason(text: str):
+    """Smart parse: joni kaka faforbarj -> target joni kaka, reason faforbarj"""
+    raw = clean_text(text)
+    if not raw:
+        return None, None
+
+    # Remove bot mention prefix if any
+    raw = re.sub(rf"@{re.escape(BOT_USERNAME)}", "", raw, flags=re.I).strip() if BOT_USERNAME else raw
+    words = raw.split()
+    if not words:
+        return None, None
+
+    # Known memory names longest match
+    low = key_name(raw)
+    known = sorted(DATA.get("memory", {}).keys(), key=len, reverse=True)
+    for name in known:
+        if low == name:
+            return name, ""
+        if low.startswith(name + " "):
+            reason = raw[len(name):].strip()
+            return name, reason
+
+    # VS no parse here
+    if re.search(r"\bvs\b|\bversus\b| বনাম ", raw, re.I):
+        return None, None
+
+    # mentions like @user point
+    if words[0].startswith("@") and len(words) >= 2:
+        return words[0], " ".join(words[1:])
+
+    # one-word only: memory roast if exists, otherwise ignore except command
+    if len(words) == 1:
+        return key_name(words[0]), ""
+
+    # first two words as name if second is relationship word
+    if len(words) >= 3 and key_name(words[1]) in FAMILY_WORDS:
+        return " ".join(words[:2]), " ".join(words[2:])
+
+    # If first word is common greeting, don't use it as target
+    if key_name(words[0]) in IGNORE_WORDS:
+        return None, None
+
+    return words[0], " ".join(words[1:])
+
+
+async def generate_roast(target: str, reason: str, attacker: str = "", ctx: str = "", mem: str = "") -> str:
+    target = clean_text(target) or "ওইজন"
+    reason = clean_text(reason) or "অযথা ফাপর"
+    level = DATA.get("roast_level", "brutal")
+
+    if client:
+        prompt = f"""
+তুমি একটি বাংলা গ্রুপের ultra savage roast bot।
+তোমার কাজ: target কে খুব তীক্ষ্ণ, বিদ্রূপাত্মক, অপমানজনক কিন্তু clean roast করা।
+
+কঠোর নিয়ম:
+- শুধু বাংলা ভাষা; English শব্দ যত কম সম্ভব, দরকার হলে group/online টাইপ common শব্দ চলবে।
+- ১ থেকে ৩ লাইনের বেশি নয়।
+- কোনো explanation, analysis, memory dump, bullet point নয়।
+- কোনো গালি, যৌন অপমান, পরিবার নিয়ে আক্রমণ, ধর্ম/জাতি/দেশ/লিঙ্গ/শারীরিক অক্ষমতা নিয়ে আক্রমণ নয়।
+- সরাসরি target এর নাম ধরে বলবে।
+- punchline ধারালো হবে; ভদ্র motivational কথা নয়।
+- একই রকম fixed line লিখবে না; message-এর point থেকে নতুন roast বানাবে।
+- target কে ছোট করে দেবে, কিন্তু হুমকি বা সহিংসতা নয়।
+
+Roast intensity: {level}
+Target: {target}
+Attacker/Sender: {attacker or 'অজানা'}
+Current point/reason: {reason}
+Saved memory about target: {mem or 'নেই'}
+Recent group context:
+{ctx or 'নেই'}
+
+এখন final roast দাও:
+""".strip()
+        try:
+            resp = await client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": "তুমি শুধু ছোট, ধারালো, clean বাংলা roast লিখবে।"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=1.05,
+                max_tokens=140,
+            )
+            out = (resp.choices[0].message.content or "").strip()
+            out = re.sub(r"^[\"'“”]+|[\"'“”]+$", "", out).strip()
+            if 8 <= len(out) <= 600:
+                return out
+        except Exception:
+            log.exception("OpenAI roast failed")
+
+    # Local fallback still dynamic-ish
+    bits = [
+        "কথার জোরে পাহাড় সরায়, কাজে গেলে নিজের ছায়াও খুঁজে পায় না।",
+        "এত ফাপর মারে যে নীরবতাও ওকে দেখে লজ্জা পায়।",
+        "ভাব এমন, যেন গ্রুপটা ওর নামে চলে; বাস্তবে ওর কথাই সবচেয়ে কম দামে বিকায়।",
+        "মুখে আগুন, কাজে ভেজা দিয়াশলাই।",
+        "নিজেকে বড় চালাক ভাবে, কিন্তু কথার ফাঁকেই নিজের বোকামির বিজ্ঞাপন দিয়ে দেয়।",
+        "ওর আত্মবিশ্বাস দেখে মনে হয় নেতা, ফলাফল দেখে মনে হয় ট্রায়াল ভার্সন।",
+        "যে লেভেলের আওয়াজ করে, সেই লেভেলের কাজ থাকলে আজ কিংবদন্তি হয়ে যেত।",
+    ]
+    starts = ["শোন", "ওহে", "দেখ", "আবার শুরু হলো"]
+    return f"{random.choice(starts)} {target}, {reason} নিয়ে এত ভাব দেখাস না—{random.choice(bits)}"
+
 
 def group_blocked(update: Update) -> bool:
     chat = update.effective_chat
@@ -99,154 +267,27 @@ def group_blocked(update: Update) -> bool:
     if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         if DATA.get("group_lock"):
             return True
-        allowed = [str(x) for x in DATA.get("allowed_groups", [])]
-        if allowed and str(chat.id) not in allowed:
+        allowed = DATA.get("allowed_groups") or []
+        if allowed and str(chat.id) not in [str(x) for x in allowed]:
             return True
     return False
 
-FILLER_WORDS = {
-    "ke", "k", "re", "রে", "রে।", "রে?", "রে!", "niye", "নিয়ে", "নিয়া", "নিয়া", "kisu", "kichu",
-    "bolo", "bol", "বল", "বলো", "kor", "koro", "কর", "করো", "rost", "roast", "পচাও", "পচা",
-    "এই", "ওই", "akta", "একটা", "ekta", "তো", "ta", "টা"
-}
 
-FAMILY_WORDS = {"kaka", "ভাই", "vai", "bhai", "mama", "মামা", "চাচা", "চাচু", "apu", "আপু", "দাদা"}
-
-POINT_HINTS = [
-    "fapor", "fafor", "faporbaj", "faforbaj", "ফাপর", "ফাপরবাজ", "ফাপরাবাজ",
-    "bokachoda", "boka", "বোকা", "গাধা", "gadha", "faltu", "ফালতু", "ভুয়া", "vua",
-    "baje", "বাজে", "লোভী", "লাজুক", "চুপ", "লেট", "ঘুম", "কাজ", "খায়", "খায়", "চলে"
-]
-
-def extract_target_reason(text: str):
-    """Detect target and point from normal group text."""
-    text = clean_text(text)
-    if not text or text.startswith("/"):
-        return None, None
-
-    # VS auto pattern
-    if re.search(r"\bvs\b|\bversus\b| বনাম ", text, re.I):
-        return None, None
-
-    # Known memory name longest match
-    low = clean_name(text)
-    for name in sorted(DATA.get("memory_by_name", {}).keys(), key=len, reverse=True):
-        if low == name or low.startswith(name + " "):
-            rest = text[len(name):].strip() if len(text) >= len(name) else ""
-            return name, rest
-
-    words = text.split()
-    if len(words) < 2:
-        return clean_name(words[0]) if words else None, ""
-
-    # If second word is family relation, target = first 2 words
-    if clean_name(words[1]) in FAMILY_WORDS:
-        target = " ".join(words[:2])
-        reason = " ".join(words[2:])
-    else:
-        target = words[0]
-        reason = " ".join(words[1:])
-
-    target = clean_name(target)
-    reason = clean_text(reason)
-
-    # Remove filler from reason beginning
-    rw = reason.split()
-    while rw and clean_name(rw[0]) in FILLER_WORDS:
-        rw.pop(0)
-    reason = " ".join(rw).strip()
-
-    return target, reason
-
-def should_roast_text(text: str, reason: str) -> bool:
-    if not reason:
-        return False
-    low = clean_name(text + " " + reason)
-    # Direct name + anything is allowed, but avoid very generic greetings
-    greetings = {"hi", "hello", "হাই", "হ্যালো", "kemon aso", "কেমন আছো"}
-    if low in greetings:
-        return False
-    if any(h in low for h in POINT_HINTS):
-        return True
-    # For phrase like "joni kaka ekdom ..." still roast if enough words
-    return len(reason.split()) >= 1 and len(text.split()) >= 2
-
-async def dynamic_ai_roast(target: str, point: str, context_memory: str = "") -> str:
-    """Generate dynamic, non-fixed savage sarcastic roast."""
-    if OPENAI_API_KEY:
-        try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            prompt = f"""
-তুমি একটি বাংলা গ্রুপের রোস্ট বট। তোমার কাজ হলো target-কে point ধরে ছোট, তীক্ষ্ণ, বিদ্রুপাত্মক roast করা।
-
-কঠোর নিয়ম:
-- কোনো নির্দিষ্ট/হার্ডকোডেড reply না; প্রতিবার নতুনভাবে বানাবে।
-- ১ থেকে ২ লাইনের বেশি হবে না।
-- বাংলা প্রধান ভাষা হবে; group, performance, network, CEO টাইপ কথাগুলো দরকার হলে ব্যবহার করা যাবে।
-- অশ্লীল গালি, হুমকি, জাতি/ধর্ম/শরীর/পরিবার/রোগ নিয়ে আক্রমণ করবে না।
-- explanation, bullet, memory dump, "কারণ" এসব লিখবে না।
-- punchline ধারালো হবে।
-- Target নাম অবশ্যই থাকবে।
-- Point থেকে ছোট ছোট ব্যঙ্গাত্মক angle ধরবে।
-
-Target: {target}
-Point: {point or 'ফাপর/আওয়াজ বেশি'}
-Previous context: {context_memory or 'নেই'}
-
-এখন শুধু roast লিখো:
-""".strip()
-            resp = await client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You write sharp short Bangla sarcastic roasts only. No explanations."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=1.15,
-                max_tokens=120,
-            )
-            out = (resp.choices[0].message.content or "").strip()
-            out = re.sub(r"^[\"'“”]+|[\"'“”]+$", "", out).strip()
-            if len(out) >= 10:
-                return out
-        except Exception:
-            log.exception("OpenAI failed, using fallback")
-
-    # local dynamic fallback, not one fixed reply
-    punch = [
-        "কথায় VIP, কাজে low battery mode।",
-        "আওয়াজটা মাইকের মতো, কিন্তু কাজের বেলায় silent mode।",
-        "নিজেকে main character ভাবে, বাস্তবে group-এর loading screen।",
-        "confidence দেখে CEO লাগে, কাজ দেখলে intern-ও resign করে।",
-        "ফাপর এমন level-এর, calculator দিয়েও হিসাব মেলে না।",
-        "কথায় আগুন, কাজে শুধু ধোঁয়া।",
-        "নিজের hype নিজেই দেয়, group শুধু evidence দেখে হাসে।",
-        "performance এমন দুর্বল, screenshot নিলেও লজ্জা পায়।",
-    ]
-    starters = [
-        f"{target} এমন {point or 'ফাপরবাজ'}, {random.choice(punch)}",
-        f"{target}-এর {point or 'ফাপর'} দেখে মনে হয় বড় কিছু, কিন্তু {random.choice(punch)}",
-        f"ওহে {target}, {point or 'ফাপর'} কমাও—{random.choice(punch)}",
-        f"{target} আবার {point or 'ফাপর'} নিয়ে হাজির; {random.choice(punch)}",
-    ]
-    return random.choice(starters)
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update)
     await update.message.reply_text(
-        "🔥 Alpha AI Roast Bot active.\n\n"
-        "Test:\n"
-        "/ping\n/status\n"
-        "joni kaka faforbarj\n"
-        "reply দিয়ে: ফাপরবাজ\n\n"
-        "Group normal message ধরতে BotFather privacy Disable থাকতে হবে।"
+        "🔥 Alpha Ultra Smart Roast Bot active\n\n"
+        "Test:\n/ping\n/status\njoni kaka faforbarj\nReply দিয়ে কারো point লিখো\n\n"
+        "Group normal message ধরতে BotFather → /setprivacy → Disable"
     )
 
-async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update)
     await update.message.reply_text("✅ Bot alive")
 
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update)
     chat = update.effective_chat
     await update.message.reply_text(
@@ -254,64 +295,135 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Repair: {'ON' if DATA.get('repair') else 'OFF'}\n"
         f"Normal reply: {'ON' if DATA.get('normal_reply') else 'OFF'}\n"
         f"Group lock: {'ON' if DATA.get('group_lock') else 'OFF'}\n"
-        f"OpenAI: {'ON' if OPENAI_API_KEY else 'OFF fallback'}\n"
-        f"Admins: {sorted(list(ADMIN_IDS)) or 'none'}\n"
+        f"OpenAI: {'ON' if bool(client) else 'OFF fallback'}\n"
+        f"Roast level: {DATA.get('roast_level')}\n"
+        f"Admins: {sorted(list(ADMIN_IDS))}\n"
         f"Chat ID: {chat.id if chat else 'unknown'}"
     )
 
-async def set_bool(update: Update, key: str, value: bool, label: str):
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Commands\n"
+        "/ping\n/status\n/repair_on\n/repair_off\n/normal_on\n/normal_off\n"
+        "/lockgroup\n/unlockgroup\n/setgroup\n"
+        "/level light|savage|brutal\n"
+        "/mem name info\n/memory name\n/forget name\n"
+        "/roast name reason\n/vs name1 name2\n/users"
+    )
+
+
+async def set_bool(update, key, val, label):
     remember_user(update)
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ শুধু admin করতে পারবে।")
+        await update.message.reply_text("⛔ শুধু admin করতে পারবে")
         return
-    DATA[key] = value
+    DATA[key] = val
     save_data()
-    await update.message.reply_text(f"✅ {label}: {'ON' if value else 'OFF'}")
+    await update.message.reply_text(f"✅ {label}: {'ON' if val else 'OFF'}")
+
 
 async def repair_on(update, context): await set_bool(update, "repair", True, "Repair")
 async def repair_off(update, context): await set_bool(update, "repair", False, "Repair")
 async def normal_on(update, context): await set_bool(update, "normal_reply", True, "Normal reply")
 async def normal_off(update, context): await set_bool(update, "normal_reply", False, "Normal reply")
-async def lock_on(update, context): await set_bool(update, "group_lock", True, "Group lock")
-async def lock_off(update, context): await set_bool(update, "group_lock", False, "Group lock")
+async def lockgroup(update, context): await set_bool(update, "group_lock", True, "Group lock")
+async def unlockgroup(update, context): await set_bool(update, "group_lock", False, "Group lock")
+
+
+async def setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ শুধু admin করতে পারবে")
+        return
+    gid = str(update.effective_chat.id)
+    if gid not in DATA["allowed_groups"]:
+        DATA["allowed_groups"].append(gid)
+    save_data()
+    await update.message.reply_text(f"✅ Group allowed: {gid}")
+
+
+async def level(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update)
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ শুধু admin করতে পারবে")
+        return
+    arg = key_name(command_arg(update.message.text))
+    if arg not in {"light", "savage", "brutal"}:
+        await update.message.reply_text("Use: /level light | savage | brutal")
+        return
+    DATA["roast_level"] = arg
+    save_data()
+    await update.message.reply_text(f"✅ Roast level set: {arg}")
+
 
 async def mem_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update)
-    txt = arg_text(update.message.text)
-    if len(txt.split()) < 2:
+    arg = command_arg(update.message.text)
+    if len(arg.split()) < 2:
         await update.message.reply_text("Use: /mem name info")
         return
-    parts = txt.split(maxsplit=1)
-    name = clean_name(parts[0])
-    info = parts[1].strip()
-    DATA["memory_by_name"].setdefault(name, [])
-    DATA["memory_by_name"][name].append(info)
-    DATA["memory_by_name"][name] = DATA["memory_by_name"][name][-30:]
-    save_data()
+    name, info = arg.split(maxsplit=1)
+    save_point(name, info)
     await update.message.reply_text(f"✅ Memory saved for {name}")
 
-async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    remember_user(update)
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ শুধু admin করতে পারবে।")
+
+async def memory_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = key_name(command_arg(update.message.text))
+    if not name:
+        await update.message.reply_text("Use: /memory name")
         return
-    name = clean_name(arg_text(update.message.text))
-    if name in DATA["memory_by_name"]:
-        del DATA["memory_by_name"][name]
+    mems = DATA.get("memory", {}).get(name, [])
+    await update.message.reply_text("\n".join([f"• {m}" for m in mems[-10:]]) if mems else f"{name} এর memory নেই")
+
+
+async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ শুধু admin করতে পারবে")
+        return
+    name = key_name(command_arg(update.message.text))
+    if name in DATA.get("memory", {}):
+        del DATA["memory"][name]
         save_data()
-        await update.message.reply_text(f"✅ {name} memory deleted")
+        await update.message.reply_text(f"✅ Deleted memory: {name}")
     else:
-        await update.message.reply_text("Memory পাওয়া যায়নি।")
+        await update.message.reply_text("Memory পাওয়া যায়নি")
+
+
+async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update)
+    lines = ["👥 Users"]
+    for u in list(DATA.get("users", {}).values())[-50:]:
+        lines.append(f"• {u['name']} | {u['id']} | @{u.get('username','')}")
+    await update.message.reply_text("\n".join(lines))
+
 
 async def roast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update)
-    txt = arg_text(update.message.text)
-    target, reason = extract_target_reason(txt)
-    if not target:
-        await update.message.reply_text("Use: /roast name point")
+    if DATA.get("repair"):
         return
-    mem = " | ".join(DATA["memory_by_name"].get(target, [])[-3:])
-    await update.message.reply_text(await dynamic_ai_roast(target, reason, mem))
+    arg = command_arg(update.message.text)
+    target, reason = parse_target_reason(arg)
+    if not target:
+        await update.message.reply_text("Use: /roast name reason")
+        return
+    save_point(target, reason)
+    out = await generate_roast(target, reason, display_name(update.effective_user), recent_context(update.effective_chat.id), memory_for(target))
+    await update.message.reply_text(out)
+
+
+async def vs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update)
+    arg = command_arg(update.message.text)
+    parts = re.split(r"\s+vs\s+|\s+বনাম\s+", arg, flags=re.I)
+    if len(parts) < 2:
+        await update.message.reply_text("Use: /vs name1 name2")
+        return
+    target = f"{parts[0].strip()} বনাম {parts[1].strip()}"
+    reason = "দুইজনকে তুলনা করে ধারালো বিদ্রূপাত্মক roast"
+    out = await generate_roast(target, reason, display_name(update.effective_user), recent_context(update.effective_chat.id), "")
+    await update.message.reply_text(out)
+
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update)
@@ -319,83 +431,84 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or not msg.text:
         return
     text = clean_text(msg.text)
-    log.info("MSG chat=%s user=%s text=%r", update.effective_chat.id, update.effective_user.id, text)
+    store_chat_message(update, text)
+    log.info("TEXT chat=%s user=%s text=%r", update.effective_chat.id, update.effective_user.id, text)
 
     if DATA.get("repair") or not DATA.get("normal_reply") or group_blocked(update):
         return
 
-    # protect bot mention direct attack with dynamic reply to sender
-    if BOT_USERNAME and f"@{BOT_USERNAME}" in text.lower():
-        target = display_name(update.effective_user)
-        roast = await dynamic_ai_roast(target, "বটকে খোঁচাতে এসেছে", "")
-        await msg.reply_text(roast)
+    # protect bot messages and very short greetings
+    if msg.from_user and msg.from_user.is_bot:
         return
 
-    # Reply targeting: target is replied user, point is current text
+    attacker = display_name(update.effective_user)
+    ctx = recent_context(update.effective_chat.id)
+
+    # reply targeting: target is replied user, reason is current text
     if msg.reply_to_message and msg.reply_to_message.from_user and not msg.reply_to_message.from_user.is_bot:
-        target = clean_name(display_name(msg.reply_to_message.from_user))
-        point = text
-        DATA["memory_by_name"].setdefault(target, [])
-        DATA["memory_by_name"][target].append(point)
-        DATA["memory_by_name"][target] = DATA["memory_by_name"][target][-30:]
-        save_data()
-        mem = " | ".join(DATA["memory_by_name"].get(target, [])[-3:])
-        await msg.reply_text(await dynamic_ai_roast(target, point, mem))
+        target = display_name(msg.reply_to_message.from_user)
+        reason = text
+        save_point(target, reason)
+        out = await generate_roast(target, reason, attacker, ctx, memory_for(target))
+        await msg.reply_text(out)
         return
 
-    # VS detection
+    # VS auto
     if re.search(r"\bvs\b|\bversus\b| বনাম ", text, re.I):
         parts = re.split(r"\s+vs\s+|\s+versus\s+|\s+বনাম\s+", text, flags=re.I)
         if len(parts) >= 2:
-            a, b = clean_name(parts[0]), clean_name(parts[1])
-            await msg.reply_text(await dynamic_ai_roast(f"{a} বনাম {b}", "দুইজনের তুলনা করে savage roast", ""))
+            target = f"{parts[0].strip()} বনাম {parts[1].strip()}"
+            out = await generate_roast(target, "দুইজনকে compare করে savage roast", attacker, ctx, "")
+            await msg.reply_text(out)
             return
 
-    target, reason = extract_target_reason(text)
+    target, reason = parse_target_reason(text)
+
+    # If normal random chat like hello, do not roast unless group wants all messages.
+    # But two+ word messages will roast using first word as target.
     if not target:
         return
 
-    # Single name only: use memory only
     if not reason:
-        mems = DATA["memory_by_name"].get(target, [])
-        if not mems:
+        mem = memory_for(target)
+        if not mem:
             return
-        await msg.reply_text(await dynamic_ai_roast(target, "", " | ".join(mems[-3:])))
+        out = await generate_roast(target, "আগের memory থেকে roast", attacker, ctx, mem)
+        await msg.reply_text(out)
         return
 
-    if not should_roast_text(text, reason):
-        return
+    save_point(target, reason)
+    out = await generate_roast(target, reason, attacker, ctx, memory_for(target))
+    await msg.reply_text(out)
 
-    DATA["memory_by_name"].setdefault(target, [])
-    DATA["memory_by_name"][target].append(reason)
-    DATA["memory_by_name"][target] = DATA["memory_by_name"][target][-30:]
-    save_data()
-    mem = " | ".join(DATA["memory_by_name"].get(target, [])[-3:])
-    await msg.reply_text(await dynamic_ai_roast(target, reason, mem))
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    log.exception("BOT ERROR: %s", context.error)
+    log.exception("Telegram update error: %s", context.error)
+
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("ping", cmd_ping))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("repair_on", repair_on))
-    app.add_handler(CommandHandler("repair_off", repair_off))
-    app.add_handler(CommandHandler("normal_on", normal_on))
-    app.add_handler(CommandHandler("normal_off", normal_off))
-    app.add_handler(CommandHandler("lock_on", lock_on))
-    app.add_handler(CommandHandler("lock_off", lock_off))
-    app.add_handler(CommandHandler("mem", mem_cmd))
-    app.add_handler(CommandHandler("save", mem_cmd))
-    app.add_handler(CommandHandler("forget", forget_cmd))
-    app.add_handler(CommandHandler("delete", forget_cmd))
-    app.add_handler(CommandHandler("roast", roast_cmd))
+    for cmd, fn in [
+        ("start", start), ("ping", ping), ("status", status), ("help", help_cmd),
+        ("repair_on", repair_on), ("repair_off", repair_off),
+        ("normal_on", normal_on), ("normal_off", normal_off),
+        ("lockgroup", lockgroup), ("unlockgroup", unlockgroup), ("setgroup", setgroup),
+        ("level", level), ("mem", mem_cmd), ("save", mem_cmd),
+        ("memory", memory_cmd), ("forget", forget_cmd), ("delete", forget_cmd),
+        ("users", users_cmd), ("roast", roast_cmd), ("vs", vs_cmd),
+    ]:
+        app.add_handler(CommandHandler(cmd, fn))
+
+    # old style aliases
+    app.add_handler(CommandHandler("repair", lambda u, c: repair_on(u, c) if "on" in command_arg(u.message.text).lower() else repair_off(u, c)))
+    app.add_handler(CommandHandler("lock", lambda u, c: lockgroup(u, c) if "on" in command_arg(u.message.text).lower() else unlockgroup(u, c)))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(error_handler)
-    log.info("Bot starting | OpenAI=%s | Admins=%s", bool(OPENAI_API_KEY), ADMIN_IDS)
+
+    log.info("Bot starting | OpenAI=%s | Admins=%s", bool(client), ADMIN_IDS)
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
