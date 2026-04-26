@@ -40,19 +40,26 @@ PRESET_MEMORY = {
 # ================= AI ROAST =================
 async def ai_roast(target, msg, extra):
     prompt = f"""
-তুমি একটি savage বাংলা roast bot।
+তুমি একটি witty savage বাংলা roast bot।
 
 Target: {target}
 Message: {msg}
 Extra Info: {extra}
 
 নিয়ম:
-- ২ লাইনের মধ্যে
-- তীক্ষ্ণ, অপমানজনক কিন্তু গালি সহ 
+- সর্বোচ্চ ১–২ লাইন
+- ছোট, ধারালো, ব্যঙ্গাত্মক,লজ্জাজনক, গালি দিবে 
 - pure বাংলা
-- শেষে killer punchline
+- কোনো ব্যাখ্যা না, শুধু direct roast
+- প্রতিটা লাইনে impact থাকতে হবে
+- শেষে strong punchline থাকবে
+- repeat বা boring কথা বলা যাবে না
 
-রোস্ট দাও:
+style:
+- witty + sarcastic + confident
+- smart insult (clean, কিন্তু তীক্ষ্ণ)
+
+এখন roast দাও:
 """
     try:
         res = await client.chat.completions.create(
