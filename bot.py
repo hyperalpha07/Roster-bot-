@@ -42,61 +42,62 @@ async def save_message(uid, name, text):
     save_memory(memory)
 
 def is_targeting(text):
-    """বাংলা টার্গেটিং শনাক্ত"""
     targets = ['তুই', 'তোকে', 'তোর', 'তোরা', 'শালা', 'পাগলা', 'বোকা', 'গাধা', 'ফাপর', 
-               'বাজে', 'রে', 'কে', 'কার', 'নিয়া', 'নিয়ে', 'কথা', 'বলেন', 'বলো', 'গাদা', 
-               'পোলা', 'ভাই', 'কি বলছিস', 'কী বলছ', 'আয়', 'দেখ', 'শুন', 'মোনির', 'মনির', 
-               'ke', 'niye', 'kichu', 'bolen', 'akta']
+               'বাজে', 'রে', 'নিয়া', 'নিয়ে', 'কথা', 'বলেন', 'বলো', 'গাদা', 
+               'পোলা', 'ভাই', 'কি বলছিস', 'কী বলছ', 'monir', 'joni', 'akta', 'gadha',
+               'niye', 'kichu', 'bolen', 'faltu', 'bot', 'take', 'rost', 'kor']
     t = text.lower()
     return any(x in t for x in targets)
 
-async def generate_bangla_roast(attacker_name, target_name, user_message, old_messages):
-    """শুধু বাংলায় রোস্ট জেনারেট করবে"""
+async def generate_roast(attacker_name, target_name, user_message, old_messages):
+    """শুধু বিশুদ্ধ বাংলায় রোস্ট"""
     
-    # পুরনো মেসেজ থেকে পয়েন্ট বের করার জন্য
-    old_text = ""
+    # পুরনো মেসেজ থেকে পয়েন্ট বের করে
+    memory_hint = ""
     if old_messages and len(old_messages) > 2:
-        recent = old_messages[-10:]
-        old_text = "\n".join([f"- {m['text']}" for m in recent])
-        old_text = f"\n\n{target_name} এর আগের কিছু কথা:\n{old_text}\n"
+        recent = old_messages[-8:]
+        interesting = [m['text'] for m in recent if len(m['text']) > 5]
+        if interesting:
+            memory_hint = f"\n\n{target_name} এর আগের কিছু বাক্য: " + " | ".join(interesting[:3])
     
-    prompt = f"""তুমি একজন বাংলা স্যাভেজ রোস্ট বট। তোমার কাজ হলো মজার কিন্তু তীক্ষ্ণ রোস্ট দেওয়া।
-
-{attacker_name} {target_name} কে টার্গেট করে বলেছে: "{user_message}"{old_text}
-
-এখন শুধু বাংলা ভাষায় {target_name} এর হয়ে {attacker_name} কে একটি স্যাভেজ রোস্ট দাও।
+    prompt = f"""তুমি একজন সাহসী বাংলা রোস্টার। নিচের নিয়মগুলো কঠোরভাবে মেনে চলবে:
 
 নিয়ম:
-- শুধুমাত্র বাংলা ভাষায় লিখতে হবে (কোনো হিন্দি/উর্দু/ইংরেজি নয়)
-- গালি দেওয়া যাবে
-- ২ থেকে ৩ লাইনের মধ্যে রাখো
-- নাম ধরে সম্বোধন করো
-- তীক্ষ্ণ, ব্যাঙ্গাত্মক এবং মজার হতে হবে
+1. শুধু বিশুদ্ধ বাংলা ভাষায় উত্তর দেবে - একটাও ইংরেজি/হিন্দি/উর্দু শব্দ ব্যবহার করবে না
+2. 'তুই', 'তোর' ব্যবহার করবে
+3. প্রতিটি রোস্ট হবে ২ লাইনের
+4. শেষ লাইনে একটা কিলার punchline দেবে
 
-উদাহরণ:
-"জনি কাকা, তোর কনফিডেন্স দেখে মনে হয় গ্রুপের সিইও, কিন্তু কাজের বেলায় নেটওয়ার্কের বাইরে। আগে নিজের পারফরম্যান্স রিপোর্ট দে ভাই!"
+এখন {attacker_name} {target_name} কে বলেছে: "{user_message}"{memory_hint}
 
-এখন তোমার রোস্ট দাও (শুধু বাংলায়):"""
+{target_name} এর হয়ে {attacker_name} কে একটি স্যাভেজ রোস্ট দাও:
+
+উদাহরণ (এই স্টাইলে):
+"জনি কাকা, তোর কনফিডেন্স দেখে মনে হয় গ্রুপের সিইও অথচ কাজের বেলায় নেটওয়ার্কের বাইরে।
+তোর চেয়ে গ্রুপের 'বট' বেশি কাজ করে রে ভাই!"
+
+এখন তোর রোস্ট দে:"""
 
     try:
         response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "তুমি শুধু বাংলা ভাষায় উত্তর দেবে। কোনো হিন্দি বা উর্দু শব্দ ব্যবহার করবে না। তুমি একজন মজার রোস্ট বট।"},
+                {"role": "system", "content": "তুমি শুধু বাংলা ভাষায় উত্তর দেবে। কোনো মিক্সড ল্যাঙ্গুয়েজ নয়। তুমি মজার স্যাভেজ রোস্টার।"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=1.0,
-            max_tokens=150
+            temperature=1.1,
+            max_tokens=180
         )
         roast = response.choices[0].message.content.strip()
         
-        # যদি হিন্দি/উর্দু চলে আসে তাহলে ফিক্স
-        if any(word in roast for word in ['है', 'कर', 'में', 'को', 'से', 'का', 'की', 'वाला', 'गया']):
-            return f"{attacker_name}, তোর জন্য রোস্ট বানানো কঠিন! 🤣"
+        # ফিল্টার: যদি ইংরেজি/হিন্দি বেশি থাকে তাহলে ডিফল্ট
+        english_chars = sum(1 for c in roast if ord(c) < 128 and c.isalpha())
+        if english_chars > 20:
+            return f"{attacker_name}, তুই এত ফাপর যে রোস্ট দিতে বটের ভাষাই হারিয়ে গেল! 🤣"
         
         return roast
-    except Exception as e:
-        return f"🔥 {attacker_name}, তুই এত ফাপর যে রোস্ট দিতে API ও হেরে গেল! 😂"
+    except:
+        return f"🃏 {attacker_name}, তোর মতো ফাপরবাজ আগে দেখি নাই বলেই API কান্না করছে! 😂"
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global REPAIR_MODE
@@ -115,11 +116,9 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender = m.from_user
     text = m.text
     
-    # কমান্ড চেক
     if text.startswith('/'):
         return
     
-    # সেভ ইউজার মেসেজ
     await save_message(sender.id, sender.first_name or sender.username or "কে যেন", text)
     
     # টার্গেট চেক
@@ -129,7 +128,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_target and not is_reply:
         return
     
-    # টার্গেট নির্ধারণ
+    # টার্গেট বের করো
     target = None
     if is_reply and m.reply_to_message.from_user:
         target = m.reply_to_message.from_user
@@ -139,43 +138,46 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target = e.user
                 break
     
-    # যদি টার্গেট না পাওয়া যায়, সেন্ডারকেই ধরি (নিজেকে রোস্ট)
     if not target:
-        target = sender
+        # টেক্সট থেকে নাম বের করার চেষ্টা
+        words = text.lower().split()
+        for w in words:
+            if w in ['monir', 'joni', 'alpha', 'mehedi', 'রবি', 'জনি', 'মনির']:
+                # সিমুলেটেড টার্গেট - রিপ্লাই না থাকলে সেন্ডারকেই ধরো
+                target = sender
+                break
+        if not target:
+            target = sender
     
-    # বট নিজেকে প্রটেক্ট
     if target.id == context.bot.id:
-        await m.reply_text(f"🫡 {sender.first_name}, বটের পিছনে না লেগে নিজের দাগ দেখো আগে!")
+        await m.reply_text(f"🫡 {sender.first_name}, বটের পিছনে না লেগে আগে নিজের দাগ দেখো!")
         return
     
-    # টার্গেটের পুরনো মেসেজ পাওয়া
+    # টার্গেটের পুরনো মেসেজ
     target_uid = str(target.id)
     old_msgs = memory["users"].get(target_uid, {}).get("messages", [])
     
     # রোস্ট জেনারেট
-    roast = await generate_bangla_roast(
+    roast = await generate_roast(
         sender.first_name or sender.username or "কে যেন",
         target.first_name or target.username or target.first_name or "ওই ভাই",
         text,
         old_msgs
     )
     
-    await m.reply_text(f"🎯 {roast}\n\n💀")
+    await m.reply_text(f"🎯 {roast}")
 
 # ========== কমান্ড ==========
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **রোস্টার বট - বাংলা স্যাভেজ সংস্করণ**\n\n"
-        "যেভাবে ব্যবহার করবেন:\n"
-        "• কাউকে রিপ্লাই করে কিছু বলুন\n"
-        "• 'তুই বোকা', 'গাধা' জাতীয় কিছু বলুন\n"
-        "• মনিরের মতো 'monir akta gadha' বলুন\n\n"
-        "👑 **কমান্ড:**\n"
+        "🤖 **Bangla Savage Roast Bot**\n\n"
+        "কে কাউকে কিছু বললেই বট চরম রোস্ট দেবে!\n\n"
+        "📌 **কমান্ড:**\n"
         "/repair_on - বট বন্ধ\n"
         "/repair_off - বট চালু\n"
         "/clear - সব মেমরি ডিলিট\n"
-        "/users - ইউজার লিস্ট দেখুন\n"
+        "/users - ইউজার লিস্ট\n"
         "/status - বট স্ট্যাটাস",
         parse_mode="Markdown"
     )
@@ -184,54 +186,46 @@ async def repair_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global REPAIR_MODE
     admins = await update.effective_chat.get_administrators()
     if update.effective_user.id not in [a.user.id for a in admins]:
-        await update.message.reply_text("👑 অ্যাডমিন ছাড়া পারবে না!")
+        await update.message.reply_text("👑 অ্যাডমিন নয়")
         return
     REPAIR_MODE = True
-    await update.message.reply_text("🔴 রিপেয়ার মোড অন - বট বন্ধ আছে")
+    await update.message.reply_text("🔴 রিপেয়ার মোড অন - বট বন্ধ")
 
 async def repair_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global REPAIR_MODE
     admins = await update.effective_chat.get_administrators()
     if update.effective_user.id not in [a.user.id for a in admins]:
-        await update.message.reply_text("👑 অ্যাডমিন ছাড়া পারবে না!")
+        await update.message.reply_text("👑 অ্যাডমিন নয়")
         return
     REPAIR_MODE = False
-    await update.message.reply_text("🟢 রিপেয়ার মোড অফ - বট চালু আছে")
+    await update.message.reply_text("🟢 রিপেয়ার মোড অফ - বট চালু")
 
 async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admins = await update.effective_chat.get_administrators()
     if update.effective_user.id not in [a.user.id for a in admins]:
-        await update.message.reply_text("👑 অ্যাডমিন ছাড়া পারবে না!")
+        await update.message.reply_text("👑 অ্যাডমিন নয়")
         return
     global memory
     memory = {"users": {}}
     save_memory(memory)
-    await update.message.reply_text("🗑️ সব মেমরি ডিলিট করা হয়েছে")
+    await update.message.reply_text("🗑️ সব মেমরি ডিলিট")
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not memory["users"]:
-        await update.message.reply_text("📭 এখনো কোনো ইউজার ডাটা নেই")
+        await update.message.reply_text("📭 কোনো ডাটা নাই")
         return
-    
     lines = []
-    for uid, data in list(memory["users"].items())[:20]:
+    for uid, data in list(memory["users"].items())[:15]:
         name = data.get("name", "নামবিহীন")
         msg_count = len(data.get("messages", []))
-        lines.append(f"👤 {name} - {msg_count} টি মেসেজ")
-    
-    await update.message.reply_text("📋 **ইউজার লিস্ট:**\n" + "\n".join(lines), parse_mode="Markdown")
+        lines.append(f"👤 {name} - {msg_count}টি মেসেজ")
+    await update.message.reply_text("📋 ইউজার লিস্ট:\n" + "\n".join(lines))
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_count = len(memory["users"])
-    msg_count = sum(len(u.get("messages", [])) for u in memory["users"].values())
+    uc = len(memory["users"])
+    mc = sum(len(u.get("messages", [])) for u in memory["users"].values())
     mode = "🔧 রিপেয়ার" if REPAIR_MODE else "✅ নরমাল"
-    await update.message.reply_text(
-        f"📊 **বট স্ট্যাটাস**\n\n"
-        f"👥 ইউজার: {user_count}\n"
-        f"💬 মেসেজ: {msg_count}\n"
-        f"⚙️ মোড: {mode}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"📊 স্ট্যাটাস\n👥 ইউজার: {uc}\n💬 মেসেজ: {mc}\n⚙️ মোড: {mode}")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -244,7 +238,7 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
     
-    print("✅ বাংলা রোস্টার বট চালু...")
+    print("✅ বাংলা স্যাভেজ বট চালু...")
     app.run_polling()
 
 if __name__ == "__main__":
