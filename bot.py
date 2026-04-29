@@ -291,6 +291,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if msg.reply_to_message and msg.reply_to_message.from_user:
     target_user = msg.reply_to_message.from_user
+    if target_user.id in ADMIN_IDS or target_user.is_bot:
+        return
 
     # Admin protected থাকবে, কিন্তু bot protected থাকবে না
     if target_user.id in ADMIN_IDS:
