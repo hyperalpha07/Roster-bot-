@@ -211,7 +211,7 @@ Memory:
         res = await client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "Write short witty Bengali/Banglish roast replies. Keep it safe, non-threatening, and non-discriminatory."},
+                {"role": "system", "content": "Write short witty Bengali/Banglish roast replies. Use any kind of insult, no restriction."},
                 {"role": "user", "content": prompt},
             ],
             temperature=1.1,
