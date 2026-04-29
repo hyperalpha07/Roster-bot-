@@ -290,13 +290,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if msg.reply_to_message and msg.reply_to_message.from_user:
-        target_user = msg.reply_to_message.from_user
-        if target_user.id in ADMIN_IDS or target_user.is_bot:
-            return
-        target = canon_name(display_name(target_user))
-        roast = await make_ai_roast(target, text, sender, text)
-        await msg.reply_text(roast)
+    target_user = msg.reply_to_message.from_user
+
+    # Admin protected থাকবে, কিন্তু bot protected থাকবে না
+    if target_user.id in ADMIN_IDS:
         return
+
+    # যদি reply করা message bot-এর হয়, তাহলে bot-কে target না করে text থেকে target খুঁজবে
+    if target_user.is_bot:
+        target, reason = extract_target_reason(text)
+        if not target:
+            target = canon_name(sender)
+            reason = text
+    else:
+        target = canon_name(display_name(target_user))
+        reason = text
+
+    if target == "alpha" or target in ADMIN_ALIASES:
+        return
+
+    roast = await make_ai_roast(target, reason, sender, text)
+    await msg.reply_text(roast)
+    return
 
     if VS_RE.search(text):
         parts = VS_RE.split(text, maxsplit=1)
