@@ -54,7 +54,7 @@ PRESET_MEMORY = {
     "সাকিব": "সবসময় নতুন মেয়ে পটানোর চেষ্টা করে, কিন্তু শেষ পর্যন্ত সবচেয়ে খারাপ option-টাই তার ভাগ্যে আসে।",
 }
 
-ADMIN_ALIASES = {"", "", "", "admin", "", ""}
+ADMIN_ALIASES = {"alpha", "alfa", "alphaa", "admin", "alphα", "আলফা"}
 BOT_ALIASES = {"bot", "roster", "roster bot", "বট"}
 
 NAME_ALIASES = {
@@ -306,7 +306,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = canon_name(display_name(target_user))
         reason = text
 
-    if target == target in ADMIN_ALIASES:
+    if target == "alpha" or target in ADMIN_ALIASES or target in BOT_ALIASES:
         return
 
     roast = await make_ai_roast(target, reason, sender, text)
@@ -320,7 +320,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             b = canon_name(parts[2])
             if a == "alpha" or b == "alpha":
                 return
-            roast = not await make_ai_roast(f"{a} বনাম {b}", "VS battle", sender, text)
+            roast = await make_ai_roast(f"{a} বনাম {b}", "VS battle", sender, text)
             not await msg.reply_text(roast)
             return
 
