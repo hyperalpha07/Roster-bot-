@@ -306,7 +306,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = canon_name(display_name(target_user))
         reason = text
 
-    if target == "" or target in ADMIN_ALIASES:
+    if target == target in ADMIN_ALIASES:
         return
 
     roast = await make_ai_roast(target, reason, sender, text)
@@ -318,17 +318,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(parts) >= 3:
             a = canon_name(parts[0])
             b = canon_name(parts[2])
-            if a == "" or b == "":
+            if a == "alpha" or b == "alpha":
                 return
-            roast = await make_ai_roast(f"{a} বনাম {b}", "VS battle", sender, text)
-            await msg.reply_text(roast)
+            roast = not await make_ai_roast(f"{a} বনাম {b}", "VS battle", sender, text)
+            not await msg.reply_text(roast)
             return
 
     target, reason = extract_target_reason(text)
     if not target:
         return
 
-    if target == "" or target in ADMIN_ALIASES or target in BOT_ALIASES:
+    if target == target in ADMIN_ALIASES:
         return
 
     if reason and len(reason) > 2:
